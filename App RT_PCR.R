@@ -20,7 +20,11 @@ library(BiocManager)
 options(repos = BiocManager::repositories())
 options(shiny.maxRequestSize = 30*1024^2)
 
+## Versions
 
+#v.2.0 (September 2023): Input (xlsx, csv, and txt)
+                        #Update on geometric mean for duplicated values
+                        #Users can choose groups to be plotted in Boxplots
 
 ################################################################################
 #Required functions
@@ -309,8 +313,8 @@ Data <- tabPanel(
       title = "Inputs",
       selectInput("data_format","Choose the format of your data",
                   c("One column per gene","One column with gene names")),  
-      fileInput("xlsx_input","Upload the file with Ct data in xlsx format",
-                accept=c(".xlsx")),
+      fileInput("xlsx_input","Upload the file with Ct data (xls, xlsx, txt, or csv formats are allowed)",
+                accept=c(".xlsx",".txt",".csv")),
       actionButton("run_button","Start!",icon=icon("play")),
       br(),
       br(),
@@ -427,6 +431,7 @@ expressionAna <- tabPanel(
     sidebarPanel(
       title = "Inputs",
       selectInput("ref.group0","Select the variable to be compared",c(NULL)),
+      checkboxGroupInput("ref.group0_5","Select groups to be compared",c(NULL)),
       selectInput("ref.group","Select the reference group (for statistical comparisons)",c(NULL)),  
       selectInput("gene","Select one gene from the list",c(NULL)),
       # checkboxInput("specific_expr","Do you want to focus on a subcohort based on gene expression?"),
@@ -553,7 +558,7 @@ user_guide<-tabPanel(
   titlePanel("Guide"),
   sidebarLayout(
     sidebarPanel(
-      p("You can check our guide for the \u25B3Xpress app at "),
+      p("You can check our guide for the deltaXpress (\u25B3Xpress) app at "),
       a("this link", 
         href = "https://drive.google.com/file/d/1RfwtaTxasq_WgTXkZW7QXVB4SIgYFOca/view?usp=share_link",
         target="_blank"),
@@ -577,7 +582,7 @@ ui <- navbarPage(
                            .navbar {min-height:60px !important;}
                     '))
   ),
-  title = HTML(paste("&#916Xpress: A tool for mapping", "differentially correlated genes",sep = "<br/>")),  
+  title = HTML(paste("deltaXpress: A tool for mapping", "differentially correlated genes",sep = "<br/>")),  #&#916
   Data,
   outliers_normal,
   expressionAna,
@@ -601,25 +606,51 @@ server <- function(input, output,session){
   observe({
     req(input$xlsx_input)
 
+    
+    tail(unlist(strsplit(input$xlsx_input$datapath,"[.]")),1)->formato
+    if(formato=="xlsx"){
+      x <-  read_excel(input$xlsx_input$datapath)
+    }else if(formato=="txt"){
+      x <- read.table(input$xlsx_input$datapath,sep="\t",
+                      header = TRUE, 
+                      stringsAsFactors = FALSE)
+      
+    }else if (formato=="csv"){
+      x <- read.csv(input$xlsx_input$datapath)
+    }
+    
+    gm_mean<-function(w){
+      w<-na.omit(w)
+      exp(mean(log(as.numeric(w))))
+    }
+    
+    
     tryCatch(
       {
         
         
         if(input$data_format=="One column per gene"){
-                x <-  read_excel(input$xlsx_input$datapath)
+                
 
                 if(length(class(as.data.frame(x)[,3]))==1 && class(as.data.frame(x)[,3])=="numeric"){
-                colnames(x)<-c("Sample","Group",colnames(x[,-c(1:2)]))
-                aggregate(x=as.data.frame(x),
+                
+                  colnames(x)<-c("Sample","Group",colnames(x[,-c(1:2)]))
+                
+                  aggregate(x=as.data.frame(x),
                           by=list(x$Sample,
                                   x$Group),
-                          FUN=mean)->x
+                          FUN=gm_mean )->x
                 
                 x[,-c(3:4)]->x
                 
                 colnames(x)<-c("Sample","Group",colnames(x[,-c(1:2)]))
                 
                 x<-x%>%pivot_longer(!c("Sample","Group"),names_to="Name",values_to="Value")
+                
+                renderText({"File correctly loaded. Please, click on Start!"})->output$verif1
+                renderTable({NULL})->output$verif
+                renderText({""})->output$verif2
+                
                 } else {
                   x<-NULL
                   renderText({"Please, verify the format of the input file."})->output$verif1
@@ -630,13 +661,18 @@ server <- function(input, output,session){
                 
                 
         } else {
-          x <-  read_excel(input$xlsx_input$datapath)
+          
           
           if(ncol(as.data.frame(x))==4){
             
             colnames(x)<-c("Sample","Group","Name","Value")
             
-            x<-x%>%group_by(Sample,Group,Name)%>%mutate(Value=mean(Value))%>%distinct()
+            x<-x%>%group_by(Sample,Group,Name)%>%
+              mutate(Value=gm_mean(Value))%>%distinct()
+            
+            renderText({"File correctly loaded. Please, click on Start!"})->output$verif1
+            renderTable({NULL})->output$verif
+            renderText({""})->output$verif2
             
             }else{
             
@@ -670,7 +706,7 @@ server <- function(input, output,session){
     # Reactive values updated from x
     
     
-    datos$x <- x
+    datos$x <- as.data.frame(x)
     })
 
   observeEvent(input$run_button,{
@@ -685,7 +721,7 @@ server <- function(input, output,session){
         })
       
     if(is.null(datos$order_color)){
-      hue_pal()(nrow(unique(datos$x[,2])))->col.palette
+      hue_pal()(length(unique(datos$x[,2])))->col.palette
       as.matrix(unique(datos$x[order(datos$x[,2]),][,2]))->lista_grupos
       
     }else{
@@ -702,18 +738,18 @@ server <- function(input, output,session){
                             "List of genes"),
                Values=c(colnames(datos$x[,1:2])[1],
                         colnames(datos$x[,1:2])[2],
-                        nrow(unique(datos$x[,1])),
-                        nrow(unique(datos$x[,2])),
+                        length(unique(datos$x[,1])),
+                        length(unique(datos$x[,2])),
                         paste0(t(unique(datos$x[order(datos$x[,2]),][,2])),collapse=", "),
-                        nrow(unique(datos$x[,3])),
+                        length(unique(datos$x[,3])),
                         gsub("(.{35})","\\1\n\\2",paste0(t(unique(datos$x[order(datos$x[,3]),][,3])),collapse=", ")))
                )->resumen
-    
+   
     
     renderTable({resumen})->output$verif
     renderText({""})->output$verif1
     renderText({"If the above results agree with the expected ones, continue to the next section. If not, revise the uploaded file."})->output$verif2
-    renderPlot({show_col(col.palette,labels=F,ncol=nrow(unique(datos$x[,2])))},height = 400)->output$palette_plot1
+    renderPlot({show_col(col.palette,labels=F,ncol=length(unique(datos$x[,2])))},height = 400)->output$palette_plot1
     renderUI({HTML(paste0("From left to right: <br/>",
                             paste0(as.character(lista_grupos),collapse=" <br/> ")))})->output$palette_text1
     
@@ -781,7 +817,7 @@ server <- function(input, output,session){
     
     
     if(is.null(datos$order_color)){
-      hue_pal()(nrow(unique(datos$x[,2])))->col.palette
+      hue_pal()(length(unique(datos$x[,2])))->col.palette
       as.matrix(unique(datos$x[order(datos$x[,2]),][,2]))->lista_grupos
     #   
     # }else{
@@ -799,10 +835,10 @@ server <- function(input, output,session){
                             "List of genes"),
                Values=c(colnames(datos$x[,1:2])[1],
                         colnames(datos$x[,1:2])[2],
-                        nrow(unique(datos$x[,1])),
-                        nrow(unique(datos$x[,2])),
+                        length(unique(datos$x[,1])),
+                        length(unique(datos$x[,2])),
                         paste0(t(unique(datos$x[order(datos$x[,2]),][,2])),collapse=", "),
-                        nrow(unique(datos$x[,3])),
+                        length(unique(datos$x[,3])),
                         gsub("(.{35})","\\1\n\\2",paste0(t(unique(datos$x[order(datos$x[,3]),][,3])),collapse=", ")))
     )->resumen
     
@@ -810,7 +846,7 @@ server <- function(input, output,session){
     renderTable({resumen})->output$verif
     renderText({""})->output$verif1
     renderText({"If the above results agree with the expected ones, continue to the next section. If not, revise the uploaded file."})->output$verif2
-    renderPlot({show_col(col.palette,labels=F,ncol=nrow(unique(datos$x[,2])))},height = 400)->output$palette_plot1
+    renderPlot({show_col(col.palette,labels=F,ncol=length(unique(datos$x[,2])))},height = 400)->output$palette_plot1
     renderUI({HTML(paste0("From left to right: <br/>",
                           paste0(as.character(lista_grupos),collapse=" <br/> ")))})->output$palette_text1
     
@@ -837,10 +873,10 @@ server <- function(input, output,session){
                             "List of genes"),
                Values=c(colnames(datos$x[,1:2])[1],
                         colnames(datos$x[,1:2])[2],
-                        nrow(unique(datos$x[,1])),
-                        nrow(unique(datos$x[,2])),
+                        length(unique(datos$x[,1])),
+                        length(unique(datos$x[,2])),
                         paste0(t(unique(datos$x[order(datos$x[,2]),][,2])),collapse=","),
-                        nrow(unique(datos$x[,3])),
+                        length(unique(datos$x[,3])),
                         gsub("(.{35})","\\1\n\\2",paste0(t(unique(datos$x[order(datos$x[,3]),][,3])),collapse=", ")))
     )->resumen
     
@@ -923,6 +959,7 @@ server <- function(input, output,session){
 
   
   observeEvent(input$house_Norm,{
+    
     if(!is.null(datos$x)){
       dados_norm<-datos$x%>%group_by(Name)%>%mutate(row=row_number())%>%tidyr::pivot_wider(names_from = Name, values_from = Value)
       dados_norm<-dados_norm[,-3]
@@ -952,41 +989,80 @@ server <- function(input, output,session){
       
       as.data.frame(rbind(t(dados_norm[,-c(1:2)]),t(dados_norm[,2])))->dados_normfinder
       
-      resul_house<-Normfinder(dados_normfinder)
-
-      renderText({"This code uses the NormFinder algorithm to determine the best housekeeping gene for your experiment. 
+      
+      loadError = FALSE
+      toto <- function(){
+        
+        tryCatch(resul_house<-Normfinder(dados_normfinder),error=function(e)loadError <<- TRUE)
+      }
+      
+      toto()
+      if(loadError){
+        renderText({"There is no enough complete data for running NormFinder at this moment.
+        If you know your housekeeping genes, you can include them in the space below."})->output$house_verif1
+        output$out_normal2<-
+          renderUI({
+            renderText({"Now you need to make important decisions that will affect all further analysis."})
+          })
+        
+        output$out_normal3<-
+          renderUI({
+            selectInput("which_norm","How do you want to normalize your data?",c("I want to define the housekeeping genes"))
+          })
+        
+        # output$out_normal5<-
+        #   renderUI({
+        #     checkboxInput("which_outliers","2. Do you want to remove outliers per gene and group?")
+        #   })
+        
+        output$out_normal6<-
+          renderUI({
+            actionButton("next_Analyses","Let's go to expression and correlation analyses",icon=icon("edge"))
+          })
+        
+        renderText({paste0(" ")})->output$norm_text
+        renderText({paste0(" ")})->output$norm_text1
+        renderText({paste0(" ")})->output$norm_text2
+        
+      } else{
+        resul_house<-Normfinder(dados_normfinder)
+        
+        renderText({"This code uses the NormFinder algorithm to determine the best housekeeping gene for your experiment. 
         Please note that the Normfinder algorithm uses only complete observations. So, this is only a suggestion for normalizing your genes.
         Then you can specify your preferred genes for normalization or leave the system to choose."})->output$house_verif1
-      data.frame(Gene=rownames(head(resul_house$Ordered,10)),head(resul_house$Ordered,10))->resul_house_ord
-      head(resul_house$PairOfGenes[order(resul_house$PairOfGenes[,ncol(resul_house$PairOfGenes)]),],10)->resul_house_pair
-      renderTable({resul_house_ord})->output$house_table
-      renderTable({resul_house_pair})->output$house_table2
-      as.character(resul_house_pair[1,1:2])->datos$ref
-      
-      output$out_normal2<-
-        renderUI({
-          renderText({"Now you need to make important decisions that will affect all further analysis."})
-        })
-      
-      output$out_normal3<-
-        renderUI({
-          selectInput("which_norm","How do you want to normalize your data?",c("Leave the system to choose","I want to define the housekeeping genes"))
-        })
-      
-      # output$out_normal5<-
-      #   renderUI({
-      #     checkboxInput("which_outliers","2. Do you want to remove outliers per gene and group?")
-      #   })
-      
-      output$out_normal6<-
-        renderUI({
-          actionButton("next_Analyses","Let's go to expression and correlation analyses",icon=icon("edge"))
-        })
-      
-      renderText({paste0(" ")})->output$norm_text
-      renderText({paste0(" ")})->output$norm_text1
-      renderText({paste0(" ")})->output$norm_text2
+        data.frame(Gene=rownames(head(resul_house$Ordered,10)),head(resul_house$Ordered,10))->resul_house_ord
+        head(resul_house$PairOfGenes[order(resul_house$PairOfGenes[,ncol(resul_house$PairOfGenes)]),],10)->resul_house_pair
+        renderTable({resul_house_ord})->output$house_table
+        renderTable({resul_house_pair})->output$house_table2
+        as.character(resul_house_pair[1,1:2])->datos$ref
+        
+        output$out_normal2<-
+          renderUI({
+            renderText({"Now you need to make important decisions that will affect all further analysis."})
+          })
+        
+        output$out_normal3<-
+          renderUI({
+            selectInput("which_norm","How do you want to normalize your data?",c("Leave the system to choose","I want to define the housekeeping genes"))
+          })
+        
+        # output$out_normal5<-
+        #   renderUI({
+        #     checkboxInput("which_outliers","2. Do you want to remove outliers per gene and group?")
+        #   })
+        
+        output$out_normal6<-
+          renderUI({
+            actionButton("next_Analyses","Let's go to expression and correlation analyses",icon=icon("edge"))
+          })
+        
+        renderText({paste0(" ")})->output$norm_text
+        renderText({paste0(" ")})->output$norm_text1
+        renderText({paste0(" ")})->output$norm_text2
       }
+      }
+      
+      
   })
 
   output$out_normal4<-
@@ -998,7 +1074,11 @@ server <- function(input, output,session){
   observeEvent(input$next_Analyses,{
     
     if(!is.null(datos$x)){
-      dados_norm<-datos$x%>%group_by(Name)%>%mutate(row=row_number())%>%tidyr::pivot_wider(names_from = Name, values_from = Value)
+      dados_norm<-datos$x%>%
+        group_by(Name)%>%
+        mutate(row=row_number())%>%
+        tidyr::pivot_wider(names_from = Name, values_from = Value)
+      
       dados_norm<-dados_norm[,-3]
       
       if(length(unique(table(dados_norm[,1])))>1){
@@ -1110,7 +1190,8 @@ server <- function(input, output,session){
       
       dados_norm->datos$final
       
-      
+      tail(unlist(strsplit(input$xlsx_input$datapath,"[.]")),1)->formato
+      if(formato=="xlsx"){
       if(length(excel_sheets(input$xlsx_input$datapath))>1){
         renderText({paste0("We are processing secondary variables...")})->output$norm_text2
         other_variables<-read_excel(input$xlsx_input$datapath,sheet = 2)
@@ -1129,6 +1210,7 @@ server <- function(input, output,session){
           
           }
         
+      }
       }
       
       updateSelectInput(session,"ref.group","Select the reference group (for statistical comparisons)",
@@ -1232,9 +1314,18 @@ server <- function(input, output,session){
                         "Select the reference group (for statistical comparisons)",
                         sort(paste0(t(data.frame(unique(datos$o_var[,colnames(datos$o_var) %in% prim_com]))))))
       
+      updateCheckboxGroupInput(session,"ref.group0_5",
+                               "Select groups to be compared",
+                               sort(paste0(t(data.frame(unique(datos$o_var[,colnames(datos$o_var) %in% prim_com]))))))
+      
     } else {
       updateSelectInput(session,"ref.group","Select the reference group (for statistical comparisons)",
                         paste0(t(unique(datos$final[order(datos$final[,2]),][,2]))))
+      
+      updateCheckboxGroupInput(session,"ref.group0_5",
+                               "Select groups to be compared",
+                               paste0(t(unique(datos$final[order(datos$final[,2]),][,2]))))
+      
       
     }
 
@@ -1262,206 +1353,210 @@ server <- function(input, output,session){
     if(!is.null(input$gene) & !is.null(input$ref.group)){
       
       input$gene->gene
+      input$ref.group0_5 -> variables
       input$ref.group->ref.group
       dados_proc2<-datos$final
       input$ref.group0->prim_com
-      if(prim_com!="Primary comparison"){
-
-        datos$o_var[,colnames(datos$o_var) %in% c("Samples",prim_com)]->dados_proc3
-        merge(dados_proc2,dados_proc3,by.x="Sample","Samples")->dados_proc2
-        dados_proc2[,ncol(dados_proc2)]->dados_proc2[,2]
-        dados_proc2[,-ncol(dados_proc2)]->dados_proc2
-        colnames(dados_proc2)<-c("Sample","Group",colnames(dados_proc2[,-c(1:2)]))
+      
+      
+      if(length(variables)>0){
+        if(prim_com!="Primary comparison"){
+          
+          datos$o_var[,colnames(datos$o_var) %in% c("Samples",prim_com)]->dados_proc3
+          merge(dados_proc2,dados_proc3,by.x="Sample","Samples")->dados_proc2
+          dados_proc2[,ncol(dados_proc2)]->dados_proc2[,2]
+          dados_proc2[,-ncol(dados_proc2)]->dados_proc2
+          colnames(dados_proc2)<-c("Sample","Group",colnames(dados_proc2[,-c(1:2)]))
+        }
+        
+        if(ref.group %in% variables){
+          
+          dados_proc2[which(dados_proc2$Group %in% variables),]->dados_proc2
+        }
+        
+        which(colnames(dados_proc2)==gene)->coluna
+        
+        filt<-dados_proc2[which(!is.na(dados_proc2[,coluna])),c(2,coluna)]
+        
+        names(table(as.matrix(filt[,1])))->rot
+        NULL->resfin
+        "parametric"->norm_test
+        
+        for(i in 1:length(rot)){
+          ks.test(filt[which(filt$Group==rot[i]),2],"pnorm")[2]->res
+          if(res < 0.01){
+            "no_parametric"->norm_test
+          }
+          c(resfin,res)->resfin
+        }
+        
+        data.frame(Group=rot,KS_p.value=as.numeric(resfin))->KS_result
+        
+        formatC(as.numeric(KS_result[,2]),format="e")->KS_result[,2]
+        
+        KS_result[which(KS_result[,2]< 1e-16),2]<-"< 1e-16"
+        
+        renderTable({KS_result})->output$NormTable
+        
+        if(is.null(datos$order_color)){
+          niveis<-paste0(t(unique(dados_proc2[order(dados_proc2[,2]),][,2])))
+          hue_pal()(length(unique(dados_proc2[,2])))->col.palette
+          as.matrix(unique(dados_proc2[order(dados_proc2[,2]),][,2]))->lista_grupos
+          # }else{
+          #   niveis<-paste0(as.matrix(datos$order_color[order(datos$order_color[,2]),][,1]))
+          #   as.character(as.matrix(datos$order_color[order(datos$order_color[,2]),][,3]))->col.palette
+          #   as.matrix(datos$order_color[order(datos$order_color[,2]),][,1])->lista_grupos
+        }
+        
+        if(input$method_exp=="Non-parametric test (Mann-Whitney)"){
+          method_exp<-"wilcox.test"
+          method_exp_t<-"Mann-Whitney test"
+        } else if (input$method_exp=="Parametric test (T-test)"){
+          method_exp<-"t.test"
+          method_exp_t<-"T-test"
+        } else {
+          
+          if(norm_test=="parametric"){
+            method_exp<-"t.test"
+            method_exp_t<-"T-test"
+          }else{
+            method_exp<-"wilcox.test"
+            method_exp_t<-"Mann-Whitney test"
+          }
+          
+        }
+        
+        
+        dados_proc2$Group <- factor(dados_proc2$Group , levels=niveis)
+        
+        p2<-dados_proc2[which(!is.na(dados_proc2[,coluna])),c(2,coluna)]%>%
+          ggplot(aes(Group,get(gene),color=Group))+geom_boxplot()+geom_jitter(width=0.1,size=1,alpha=0.7)+
+          theme_classic(base_size=18)+
+          scale_color_manual( values=col.palette,breaks=paste0(lista_grupos))+ 
+          theme(axis.text.x = element_text(angle = 45,hjust=1))+
+          labs(title=paste(gene,"levels across groups"),x="Groups",y=bquote(italic(.(gene)) ~ levels (-~Delta~Ct)))+
+          stat_compare_means(aes(label = ..p.signif..),ref.group=ref.group,method=method_exp)
+        
+        renderPlot({p2}, height = 500, width = ifelse(length(unique(as.data.frame(dados_proc2)[,2]))>2,
+                                                      150*length(unique(as.data.frame(dados_proc2)[,2])),
+                                                      400) )->output$express2Plot
+        
+        
+        plotdCt<-reactive({p2})
+        
+        output$UIexpr1 <- renderUI({
+          
+          downloadButton("downloadPlotdCt","Download this plot")         
+        })
+        
+        output$downloadPlotdCt <- downloadHandler(
+          filename = paste0(gene," levels (-dCt) across groups",".png"),
+          content = function(file) {
+            png(file,height = 5000, width = ifelse(length(unique(as.data.frame(dados_proc2)[,2]))>2,
+                                                   1500*length(unique(as.data.frame(dados_proc2)[,2])),
+                                                   4000),res=600)
+            print(plotdCt())
+            dev.off()
+          }) 
+        
+        
+        
+        
+        dados_proc2->dados_calc
+        dados_proc2[,c(3:ncol(dados_proc2))]-median(as.matrix(dados_proc2[which(!is.na(dados_proc2[,coluna]) & dados_proc2$Group==ref.group),coluna]))->dados_calc[,3:ncol(dados_proc2)]
+        2^dados_calc[,3:ncol(dados_proc2)]->dados_calc[,3:ncol(dados_proc2)]
+        
+        dados_calc$Group <- factor(dados_calc$Group , levels=niveis)
+        
+        
+        p1<-dados_calc[which(!is.na(dados_calc[,coluna])),]%>% 
+          ggplot(aes(Group,get(gene),color=Group))+geom_boxplot()+geom_jitter(width=0.1,size=1,alpha=0.7)+
+          theme_classic(base_size=18)+
+          scale_color_manual( values=col.palette,breaks=paste0(lista_grupos))+ 
+          theme(axis.text.x = element_text(angle = 45,hjust=1))+
+          labs(title=paste(gene,"levels across groups"),x="Groups",y=bquote(italic(.(gene)) ~ levels (2^(-~Delta~Delta~Ct))))+
+          stat_compare_means(aes(label = ..p.signif..),ref.group=ref.group,method=method_exp)
+        renderPlot({p1}, height = 500, width = ifelse(length(unique(as.data.frame(dados_proc2)[,2]))>2,
+                                                      150*length(unique(as.data.frame(dados_proc2)[,2])),
+                                                      400) )->output$expressPlot
+        
+        
+        plotddCt<-reactive({p1})
+        
+        output$UIexpr2 <- renderUI({
+          
+          downloadButton("downloadPlotddCt","Download this plot")         
+        })
+        
+        output$downloadPlotddCt <- downloadHandler(
+          filename = paste0(gene," levels (2^-ddCt) across groups",".png"),
+          content = function(file) {
+            png(file,height = 5000, width = ifelse(length(unique(as.data.frame(dados_proc2)[,2]))>2,
+                                                   1500*length(unique(as.data.frame(dados_proc2)[,2])),
+                                                   4000),res=600)
+            print(plotddCt())
+            dev.off()
+          }) 
+        
+        
+        unique(dados_calc$Group)->grupos
+        NULL->matriz
+        
+        for(i in 1:length(grupos)){
+          if(ref.group!=grupos[i]){
+            
+            dados_calc[which(dados_calc$Group==ref.group | dados_calc$Group==grupos[i]),]->brief
+            if(method_exp=="wilcox.test"){
+              wilcox.test(get(gene)~Group,data=brief)->resul
+            } else {
+              t.test(get(gene)~Group,data=brief)->resul
+            }
+            
+            median( as.matrix(na.omit(dados_calc[which(dados_calc$Group==ref.group),which(colnames(dados_calc)==gene)])))->a
+            median( as.matrix(na.omit(dados_calc[which(dados_calc$Group==grupos[i]),which(colnames(dados_calc)==gene)])))->b
+            round(IQR( as.matrix(na.omit(dados_calc[which(dados_calc$Group==ref.group),which(colnames(dados_calc)==gene)]))),2)->c
+            round(IQR( as.matrix(na.omit(dados_calc[which(dados_calc$Group==grupos[i]),which(colnames(dados_calc)==gene)]))),2)->d
+            
+            c(ref.group,as.character(grupos[i]),
+              round(length(as.matrix(na.omit(brief[which(brief$Group==ref.group),which(colnames(dados_calc)==gene)]))),digits=0),
+              round(length(as.matrix(na.omit(brief[which(brief$Group==grupos[i]),which(colnames(dados_calc)==gene)]))),digits=0),
+              paste0(round(a,2)," (",c,")"),
+              paste0(round(b,2)," (",d,")"),
+              a/b,
+              resul[3],
+              method_exp_t)->linha
+            
+            rbind(matriz,linha)->matriz
+            
+          }
+          
+        }
+        
+        colnames(matriz)<-c("Group1","Group2","n (G1)", "n (G2)","median (IQR) for G1 (2^-ddCt)","median (IQR) for G2 (2^-ddCt)","Fold Change","p.value", "test")  
+        formatC(as.numeric(matriz[,8]),format="e")->matriz[,8]
+        renderTable(matriz)->output$expressTable
+        
+        output$idExp1 <- renderUI({
+          
+          downloadButton("downloadData", "Download")
+          
+        })
+        
+        output$downloadData <- downloadHandler(
+          filename = function() {
+            gsub(":","_",Sys.time())->timed
+            paste(gene," expressionData-", timed, ".csv", sep="")
+          },
+          content = function(file) {
+            write.csv(matriz, file,row.names = F)
+          }
+        )
+      }
       }
       
       
-      which(colnames(dados_proc2)==gene)->coluna
-
-        #     if(input$specific_expr==TRUE){
-        #       
-        #       if(length(which(is.na(dados_proc2[colnames(dados_proc2) %in% input$which_focus_genes])))>0){
-        #         dados_proc2<-dados_proc2[-which(is.na(dados_proc2[colnames(dados_proc2) %in% input$which_focus_genes])),]
-        #         
-        #       }
-        #       
-        # dados_proc2<-dados_proc2%>%group_by(Group)%>%mutate(expr_group=ifelse(get(input$which_focus_genes)>quantile(get(input$which_focus_genes),0.75),"Q4",
-        #                                                                       ifelse(get(input$which_focus_genes)>quantile(get(input$which_focus_genes),0.5),"Q3",
-        #                                                                              ifelse(get(input$which_focus_genes)>quantile(get(input$which_focus_genes),0.25),"Q2","Q1"))))
-        # if(input$which_focus_level=="High expression (Q4)"){
-        #   dados_proc2<-dados_proc2[which(dados_proc2$expr_group=="Q4"),-ncol(dados_proc2)]
-        # }else{
-        #   dados_proc2<-dados_proc2[which(dados_proc2$expr_group=="Q1"),-ncol(dados_proc2)]
-        # }
-        # }
-
-       filt<-dados_proc2[which(!is.na(dados_proc2[,coluna])),c(2,coluna)]
-       
-       names(table(as.matrix(filt[,1])))->rot
-       NULL->resfin
-       "parametric"->norm_test
-       
-       for(i in 1:length(rot)){
-         ks.test(filt[which(filt$Group==rot[i]),2],"pnorm")[2]->res
-         if(res < 0.01){
-           "no_parametric"->norm_test
-         }
-         c(resfin,res)->resfin
-       }
-       
-       data.frame(Group=rot,KS_p.value=as.numeric(resfin))->KS_result
-       
-       formatC(as.numeric(KS_result[,2]),format="e")->KS_result[,2]
-       
-       KS_result[which(KS_result[,2]< 1e-16),2]<-"< 1e-16"
-       
-       renderTable({KS_result})->output$NormTable
-       
-       if(is.null(datos$order_color)){
-         niveis<-paste0(t(unique(dados_proc2[order(dados_proc2[,2]),][,2])))
-         hue_pal()(length(unique(dados_proc2[,2])))->col.palette
-         as.matrix(unique(dados_proc2[order(dados_proc2[,2]),][,2]))->lista_grupos
-       # }else{
-       #   niveis<-paste0(as.matrix(datos$order_color[order(datos$order_color[,2]),][,1]))
-       #   as.character(as.matrix(datos$order_color[order(datos$order_color[,2]),][,3]))->col.palette
-       #   as.matrix(datos$order_color[order(datos$order_color[,2]),][,1])->lista_grupos
-       }
-       
-       if(input$method_exp=="Non-parametric test (Mann-Whitney)"){
-         method_exp<-"wilcox.test"
-         method_exp_t<-"Mann-Whitney test"
-       } else if (input$method_exp=="Parametric test (T-test)"){
-         method_exp<-"t.test"
-         method_exp_t<-"T-test"
-       } else {
-         
-         if(norm_test=="parametric"){
-           method_exp<-"t.test"
-           method_exp_t<-"T-test"
-         }else{
-           method_exp<-"wilcox.test"
-           method_exp_t<-"Mann-Whitney test"
-         }
-         
-       }
-       
-
-       dados_proc2$Group <- factor(dados_proc2$Group , levels=niveis)
-
-       p2<-dados_proc2[which(!is.na(dados_proc2[,coluna])),c(2,coluna)]%>%
-         ggplot(aes(Group,get(gene),color=Group))+geom_boxplot()+geom_jitter(width=0.1,size=1,alpha=0.7)+
-         theme_classic(base_size=18)+
-         scale_color_manual( values=col.palette,breaks=paste0(lista_grupos))+ 
-         theme(axis.text.x = element_text(angle = 45,hjust=1))+
-         labs(title=paste(gene,"levels across groups"),x="Groups",y=bquote(italic(.(gene)) ~ levels (-~Delta~Ct)))+
-         stat_compare_means(aes(label = ..p.signif..),ref.group=ref.group,method=method_exp)
-       
-       renderPlot({p2}, height = 500, width = ifelse(length(unique(as.data.frame(dados_proc2)[,2]))>2,
-                                                     150*length(unique(as.data.frame(dados_proc2)[,2])),
-                                                     400) )->output$express2Plot
-       
-       
-       plotdCt<-reactive({p2})
-       
-       output$UIexpr1 <- renderUI({
-         
-         downloadButton("downloadPlotdCt","Download this plot")         
-       })
-       
-       output$downloadPlotdCt <- downloadHandler(
-         filename = paste0(gene," levels (-dCt) across groups",".png"),
-         content = function(file) {
-           png(file,height = 5000, width = ifelse(length(unique(as.data.frame(dados_proc2)[,2]))>2,
-                                                 1500*length(unique(as.data.frame(dados_proc2)[,2])),
-                                                 4000),res=600)
-           print(plotdCt())
-           dev.off()
-         }) 
-       
-       
-       
-       
-       dados_proc2->dados_calc
-       dados_proc2[,c(3:ncol(dados_proc2))]-median(as.matrix(dados_proc2[which(!is.na(dados_proc2[,coluna]) & dados_proc2$Group==ref.group),coluna]))->dados_calc[,3:ncol(dados_proc2)]
-       2^dados_calc[,3:ncol(dados_proc2)]->dados_calc[,3:ncol(dados_proc2)]
-       
-       dados_calc$Group <- factor(dados_calc$Group , levels=niveis)
-       
-       
-       p1<-dados_calc[which(!is.na(dados_calc[,coluna])),]%>% 
-         ggplot(aes(Group,get(gene),color=Group))+geom_boxplot()+geom_jitter(width=0.1,size=1,alpha=0.7)+
-         theme_classic(base_size=18)+
-         scale_color_manual( values=col.palette,breaks=paste0(lista_grupos))+ 
-         theme(axis.text.x = element_text(angle = 45,hjust=1))+
-         labs(title=paste(gene,"levels across groups"),x="Groups",y=bquote(italic(.(gene)) ~ levels (2^(-~Delta~Delta~Ct))))+
-         stat_compare_means(aes(label = ..p.signif..),ref.group=ref.group,method=method_exp)
-       renderPlot({p1}, height = 500, width = ifelse(length(unique(as.data.frame(dados_proc2)[,2]))>2,
-                                                     150*length(unique(as.data.frame(dados_proc2)[,2])),
-                                                     400) )->output$expressPlot
-       
-
-       plotddCt<-reactive({p1})
-       
-       output$UIexpr2 <- renderUI({
-         
-         downloadButton("downloadPlotddCt","Download this plot")         
-       })
-       
-       output$downloadPlotddCt <- downloadHandler(
-         filename = paste0(gene," levels (2^-ddCt) across groups",".png"),
-         content = function(file) {
-           png(file,height = 5000, width = ifelse(length(unique(as.data.frame(dados_proc2)[,2]))>2,
-                                                  1500*length(unique(as.data.frame(dados_proc2)[,2])),
-                                                  4000),res=600)
-           print(plotddCt())
-           dev.off()
-         }) 
-       
-       
-       unique(dados_calc$Group)->grupos
-       NULL->matriz
-
-       for(i in 1:length(grupos)){
-         if(ref.group!=grupos[i]){
-
-           dados_calc[which(dados_calc$Group==ref.group | dados_calc$Group==grupos[i]),]->brief
-           if(method_exp=="wilcox.test"){
-             wilcox.test(get(gene)~Group,data=brief)->resul
-           } else {
-             t.test(get(gene)~Group,data=brief)->resul
-           }
-           
-           median( as.matrix(na.omit(dados_calc[which(dados_calc$Group==ref.group),which(colnames(dados_calc)==gene)])))->a
-           median( as.matrix(na.omit(dados_calc[which(dados_calc$Group==grupos[i]),which(colnames(dados_calc)==gene)])))->b
-           c(ref.group,as.character(grupos[i]),
-             round(length(as.matrix(na.omit(brief[which(brief$Group==ref.group),which(colnames(dados_calc)==gene)]))),digits=0),
-             round(length(as.matrix(na.omit(brief[which(brief$Group==grupos[i]),which(colnames(dados_calc)==gene)]))),digits=0),a,b,a/b,resul[3],method_exp_t)->linha
-           
-           rbind(matriz,linha)->matriz
-           
-         }
-         
-       }
-       
-       colnames(matriz)<-c("Group1","Group2","n (G1)", "n (G2)","median level of G1 (2^-ddCt)","median level of G2 (2^-ddCt)","Fold Change","p.value", "test")  
-       formatC(as.numeric(matriz[,8]),format="e")->matriz[,8]
-       renderTable(matriz)->output$expressTable
-       
-       output$idExp1 <- renderUI({
-         
-         downloadButton("downloadData", "Download")
-         
-       })
-       
-       output$downloadData <- downloadHandler(
-         filename = function() {
-           gsub(":","_",Sys.time())->timed
-           paste(gene," expressionData-", timed, ".csv", sep="")
-         },
-         content = function(file) {
-           write.csv(matriz, file,row.names = F)
-         }
-       )
-    }
+      
+     
     
     
     
@@ -1856,7 +1951,7 @@ server <- function(input, output,session){
     
     
     if(is.null(datos$order_color)){
-      hue_pal()(nrow(unique(datos$x[,2])))->col.palette
+      hue_pal()(length(unique(datos$x[,2])))->col.palette
       as.matrix(unique(datos$x[order(datos$x[,2]),][,2]))->lista_grupos
     }else{
       as.character(as.matrix(datos$order_color[order(datos$order_color[,2]),][,3]))->col.palette
@@ -1907,12 +2002,26 @@ server <- function(input, output,session){
     #     )
     #   })
     
+    spec<-NA
+    
+    
+    if(input$gloss_specie=="Human"){
+      spec<-"hsapiens_gene_ensembl"
+    }else if(input$gloss_specie=="dmelanogaster_gene_ensembl"){
+      spec<-"Drosophila_melanogaster"
+    }else if(input$gloss_specie=="mmusculus_gene_ensembl"){
+      spec<-"Mus_musculus"
+    }else if(input$gloss_specie=="rnorvegicus_gene_ensembl"){
+      spec<-"Rattus_norvegicus"
+    }
+    
+
     if(!is.null(input$gloss_specie) & !is.null(input$gloss_type)){
     #Buscando os nomes de genes
       
     withProgress(message = 'Looking for your genes...', value = 0, {
       
-      
+     
 
     mart <- useDataset(input$gloss_specie, useMart("ensembl"))
     
@@ -1920,26 +2029,43 @@ server <- function(input, output,session){
 
     xy<-getBM(filters= input$gloss_type, attributes= c("ensembl_gene_id",
                                                         "external_gene_name","description",input$gloss_type,"entrezgene_id",
-                                                       "entrezgene_description"),
+                                                       "entrezgene_description","ensembl_gene_id_version"),
               values=as.matrix(colnames(datos$final[,-c(1:2)])),mart= mart)
     
+    version_spec<-as.character(searchDatasets(mart = mart, pattern = input$gloss_specie)[3])
+    
     incProgress(1/4)
+    
+   
 
-    data.frame(Query=xy[,4],Gene=xy[,2],Description=xy[,3],Ensembl_ID=xy[,1],Entrez_ID=paste0(xy[,5],": ",xy[,6]), entrez=xy[,5])->glosa
+    
+    if(nrow(xy)>0){
+      data.frame(Query=xy[,4],Gene=xy[,2],Description=xy[,3],
+               Ensembl_ID=xy[,1],Entrez_ID=paste0(xy[,5],": ",xy[,6]), entrez=xy[,5],version=xy[,7],
+               `Genome Version`=version_spec)->glosa
 
     glosa<-glosa %>% mutate(GeneCards = paste0("<a href=' https://www.genecards.org/cgi-bin/carddisp.pl?gene=",
                                                Gene,"' target='_blank'>",Gene,"</a>"))
+    } else{
+      data.frame(Query=NA,Gene=NA,Description=NA,
+                 Ensembl_ID=NA,Entrez_ID=NA, entrez=NA,version=NA,
+                 `Genome Version`=NA,GeneCards=NA)->glosa
+    }
     
     incProgress(1/4)
 
-    glosa<-glosa %>% mutate(Ensembl_ID = paste0("<a href='  https://www.ensembl.org/Homo_sapiens/Gene/Summary?db=core;g=",
-                                                Ensembl_ID,"' target='_blank'>",Ensembl_ID,"</a>"))
+   
+    
+    glosa<-glosa %>% mutate(Ensembl_ID = paste0("<a href='  https://www.ensembl.org/",spec,"/Gene/Summary?db=core;g=",
+                                                Ensembl_ID,"' target='_blank'>",version,"</a>"))
     
     glosa<-glosa %>% mutate(NCBI = paste0("<a href='  https://www.ncbi.nlm.nih.gov/gene/",
                                                 entrez,"' target='_blank'>",Gene,"</a>"))
     
-    glosa[,c(1,5,2,3,4,7,8)]->glosa
+   
+    glosa[,c(1,8,5,2,3,4,9,10)]->glosa
     incProgress(1/4)
+    
     
     })
 
